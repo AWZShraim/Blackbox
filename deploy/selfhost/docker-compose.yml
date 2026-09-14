@@ -1,0 +1,130 @@
+# A small always-on VPS profile — this is what actually hosts the public
+# demo day to day, as opposed to deploy/docker-compose.yml (local dev,
+# ephemeral, torn down constantly) or deploy/terraform/ (the "real AWS"
+# story, M11's deploy-verify-teardown exercise). Same images, same
+# services, same HTTP-only inter-service wiring (I1, Section 10) — the
+# only things this profile adds are persistence (named volumes, a restart
+# policy) and Caddy for automatic HTTPS on a real domain.
+#
+# Usage on the VPS:
+#   cp .env.example .env   # fill in DOMAIN, ANTHROPIC_API_KEY, etc.
+#   docker compose up -d --build
+#   docker compose run --rm seed
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: blackbox
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a real password in .env}
+      POSTGRES_DB: blackbox
+    volumes:
+      - blackbox_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blackbox"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  recorder:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/backend.Dockerfile
+    restart: unless-stopped
+    command: ["uvicorn", "recorder.main:app", "--host", "0.0.0.0", "--port", "8010"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://blackbox:${POSTGRES_PASSWORD}@postgres:5432/blackbox
+      ARCHIVE_S3_BUCKET: ${ARCHIVE_S3_BUCKET:-}
+      AWS_REGION: ${AWS_REGION:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  mediator:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/backend.Dockerfile
+    restart: unless-stopped
+    command: ["uvicorn", "mediator.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      RECORDER_URL: http://recorder:8010
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      MEDIATOR_CLIENT_ID: ${MEDIATOR_CLIENT_ID:-demo-agent}
+      MEDIATOR_CLIENT_SECRET: ${MEDIATOR_CLIENT_SECRET:?set a real secret in .env}
+      BLACKBOX_OPERATOR_KEY: ${BLACKBOX_OPERATOR_KEY:?set a real key in .env}
+      NORTHWIND_DB_PATH: /data/northwind.db
+    volumes:
+      - blackbox_northwind_data:/data
+    depends_on:
+      - recorder
+
+  demo:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/backend.Dockerfile
+    restart: unless-stopped
+    command: ["uvicorn", "scenarios.demo.main:app", "--host", "0.0.0.0", "--port", "8020"]
+    environment:
+      MEDIATOR_URL: http://mediator:8000
+      RECORDER_URL: http://recorder:8010
+      MEDIATOR_CLIENT_ID: ${MEDIATOR_CLIENT_ID:-demo-agent}
+      MEDIATOR_CLIENT_SECRET: ${MEDIATOR_CLIENT_SECRET}
+      NORTHWIND_DB_PATH: /data/northwind.db
+      DEMO_LIVE_RUNS_ENABLED: ${DEMO_LIVE_RUNS_ENABLED:-true}
+      # Section 8's abuse guardrails matter MORE here than in local dev —
+      # this process is reachable by the whole internet, continuously.
+      DEMO_RATE_LIMIT_MAX_RUNS: ${DEMO_RATE_LIMIT_MAX_RUNS:-5}
+      DEMO_RATE_LIMIT_WINDOW_SECONDS: ${DEMO_RATE_LIMIT_WINDOW_SECONDS:-3600}
+    volumes:
+      - blackbox_northwind_data:/data
+    depends_on:
+      - mediator
+
+  investigator:
+    build:
+      context: ../../investigator
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      RECORDER_URL: http://recorder:8010
+      MEDIATOR_URL: http://mediator:8000
+      DEMO_URL: http://demo:8020
+      BLACKBOX_OPERATOR_KEY: ${BLACKBOX_OPERATOR_KEY}
+    depends_on:
+      - recorder
+      - mediator
+      - demo
+
+  seed:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/backend.Dockerfile
+    command: ["python", "-m", "scenarios.company.seed"]
+    environment:
+      NORTHWIND_DB_PATH: /data/northwind.db
+    volumes:
+      - blackbox_northwind_data:/data
+    profiles: ["tools"] # `docker compose run --rm seed`, not part of `up`
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - blackbox_caddy_data:/data
+      - blackbox_caddy_config:/config
+    environment:
+      DOMAIN: ${DOMAIN:?set your domain in .env, e.g. demo.example.com}
+    depends_on:
+      - investigator
+
+volumes:
+  blackbox_postgres_data:
+  blackbox_northwind_data:
+  blackbox_caddy_data:
+  blackbox_caddy_config:

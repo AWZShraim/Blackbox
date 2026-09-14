@@ -1,0 +1,6 @@
+{$DOMAIN} {
+	# Automatic HTTPS via Let's Encrypt — Caddy handles cert issuance and
+	# renewal on its own as long as DOMAIN's DNS A/AAAA record points here
+	# and ports 80/443 are open.
+	reverse_proxy investigator:3000
+}

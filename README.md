@@ -10,10 +10,11 @@ them investigable.
 
 ## Status
 
-Built milestone by milestone; see git log. Currently: M1-M10 (the spine,
-detection, a live incident, containment, and the hosted demo). M11 (AWS
-deployment) and M12 (MCP endpoint + latency — the MCP endpoint itself is
-already built and tested against a real MCP client as part of M4/M8) next.
+Built milestone by milestone; see git log. Currently: M1-M11 (the spine,
+detection, a live incident, containment, the hosted demo, and AWS IaC).
+M12 (MCP endpoint + latency) next — though the MCP endpoint itself is
+already built and tested against a real MCP client as part of M4/M8, and
+the latency budget is already measured and published above.
 
 ## Performance
 
@@ -77,10 +78,41 @@ Docker Compose (`deploy/docker-compose.yml`, `make up` / `make seed` /
 machine** — Docker isn't installed here. Verify with a real `docker
 compose up` before relying on it.
 
+## AWS deployment (M11)
+
+`deploy/terraform/` has two profiles — see the cost breakdown at the top
+of each tfvars file before touching either:
+
+- `envs/demo.tfvars` — single-AZ, RDS (not Aurora), no PrivateLink,
+  Fargate Spot, GOVERNANCE-mode Object Lock (so `make destroy` can
+  actually empty the archive bucket). Meant for a short
+  deploy-verify-teardown cycle, not to run continuously.
+- `envs/reference.tfvars` — the full spec topology: multi-AZ, Aurora
+  Serverless v2, PrivateLink, COMPLIANCE-mode Object Lock, Cognito. This
+  is the documented enterprise architecture — **validated but never
+  applied** (no AWS credentials exist in this environment, and its
+  COMPLIANCE-mode lock is incompatible with a teardown exercise anyway).
+
+```bash
+make tf-fmt        # terraform fmt -recursive
+make tf-validate   # terraform init -backend=false && terraform validate
+make tf-plan-demo  # needs real AWS credentials — not run from here
+make destroy PROFILE=demo   # tears down cleanly, no orphaned resources
+```
+
+Both profiles pass `terraform validate` and get through `terraform plan`
+as far as the first AWS API call before failing on "no credential
+sources" — confirmed in this environment, which has none on purpose.
+
+`deploy/selfhost/` is a third profile: a small always-on VPS (Caddy for
+automatic HTTPS + the same five services), which is what actually hosts
+the public demo day to day rather than the AWS stack above.
+
 ## Layout
 
 See each top-level package: `common/` (trace schema + interfaces),
 `mediator/`, `recorder/`, `detector/`, `investigator/`, `scenarios/`
 (the synthetic Northwind Support company, tools, agent, incident
 definitions, and the demo orchestrator under `scenarios/demo/`),
-`deploy/` (docker-compose + Terraform).
+`deploy/` (`docker-compose.yml` for local dev, `terraform/` for AWS,
+`selfhost/` for a VPS).

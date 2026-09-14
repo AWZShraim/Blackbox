@@ -75,11 +75,38 @@ class IpRateLimiter:
 class KillSwitch:
     """The application-level end of Section 8's "CloudWatch billing alarm
     with an automated kill switch that disables live runs and falls back
-    to recorded traces." In this build, EventBridge/Lambda (M11) would
-    flip this env var (or, at the AWS layer, update a Parameter Store
-    value this reads); the important part built here is that this process
-    checks it before every live attempt, not after."""
+    to recorded traces." Locally, DEMO_LIVE_RUNS_ENABLED is a plain env
+    var. In the AWS deployment (M11, deploy/terraform/modules/alerting), a
+    Lambda subscribed to the budget-alarm SNS topic flips an SSM Parameter
+    Store value instead — an env var can't be changed on a running ECS
+    task without a new deployment, but a parameter this process polls can
+    take effect within one cache TTL, no redeploy needed. Set
+    BLACKBOX_KILL_SWITCH_SSM_PARAM to opt into that path; unset (the local
+    default) means only the env var is consulted."""
+
+    _cache: tuple[float, bool] | None = None
+    _CACHE_TTL_SECONDS = 30.0
 
     @staticmethod
     def live_runs_enabled() -> bool:
-        return os.environ.get("DEMO_LIVE_RUNS_ENABLED", "true").lower() != "false"
+        param_name = os.environ.get("BLACKBOX_KILL_SWITCH_SSM_PARAM")
+        if not param_name:
+            return os.environ.get("DEMO_LIVE_RUNS_ENABLED", "true").lower() != "false"
+
+        now = time.monotonic()
+        if KillSwitch._cache is not None and now - KillSwitch._cache[0] < KillSwitch._CACHE_TTL_SECONDS:
+            return KillSwitch._cache[1]
+
+        enabled = True
+        try:
+            import boto3
+
+            ssm = boto3.client("ssm")
+            value = ssm.get_parameter(Name=param_name)["Parameter"]["Value"]
+            enabled = value.lower() != "false"
+        except Exception:  # noqa: BLE001 - SSM unreachable must fail toward "keep the demo running," not a 500
+            logger.exception("blackbox demo: could not read kill switch from SSM, defaulting to enabled")
+            enabled = True
+
+        KillSwitch._cache = (now, enabled)
+        return enabled
