@@ -1,0 +1,928 @@
+{
+  "$defs": {
+    "AgentLifecyclePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/LifecycleEvent"
+        },
+        "initiated_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Initiated By"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "event"
+      ],
+      "title": "AgentLifecyclePayload",
+      "type": "object"
+    },
+    "ByteRange": {
+      "additionalProperties": false,
+      "description": "Location of a content segment within the assembled context window,\nin characters (UTF-8 codepoints), not raw model tokens.",
+      "properties": {
+        "end": {
+          "title": "End",
+          "type": "integer"
+        },
+        "start": {
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "ByteRange",
+      "type": "object"
+    },
+    "CandidateTrigger": {
+      "additionalProperties": false,
+      "description": "I8: a ranked candidate, never a single 'root cause'. See\ndetector/triggers.py for the ranking heuristics.",
+      "properties": {
+        "content_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Id"
+        },
+        "reasoning": {
+          "title": "Reasoning",
+          "type": "string"
+        },
+        "score": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Score",
+          "type": "number"
+        },
+        "signals": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Signals",
+          "type": "array"
+        },
+        "step_id": {
+          "format": "uuid",
+          "title": "Step Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_id",
+        "score",
+        "reasoning"
+      ],
+      "title": "CandidateTrigger",
+      "type": "object"
+    },
+    "ContainmentAction": {
+      "enum": [
+        "forwarding_stopped",
+        "credentials_revoked",
+        "agent_terminated",
+        "released"
+      ],
+      "title": "ContainmentAction",
+      "type": "string"
+    },
+    "ContainmentEventPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ContainmentAction"
+        },
+        "initiated_by": {
+          "title": "Initiated By",
+          "type": "string"
+        },
+        "post_containment": {
+          "default": false,
+          "title": "Post Containment",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "action",
+        "initiated_by"
+      ],
+      "title": "ContainmentEventPayload",
+      "type": "object"
+    },
+    "ContainmentInfo": {
+      "additionalProperties": false,
+      "description": "Session-level summary of containment state. The authoritative,\nappend-only log is the sequence of `containment_event` steps; this is\nthe current-state projection of that log, kept on Session for cheap\nreads (list views, search) without replaying the whole trace.",
+      "properties": {
+        "actions": {
+          "items": {
+            "$ref": "#/$defs/ContainmentAction"
+          },
+          "title": "Actions",
+          "type": "array"
+        },
+        "contained_at": {
+          "format": "date-time",
+          "title": "Contained At",
+          "type": "string"
+        },
+        "initiated_by": {
+          "title": "Initiated By",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "released_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Released At"
+        }
+      },
+      "required": [
+        "contained_at",
+        "initiated_by"
+      ],
+      "title": "ContainmentInfo",
+      "type": "object"
+    },
+    "ContextSegment": {
+      "additionalProperties": false,
+      "description": "One tagged slice of a model_call's assembled context window. The\nContext Inspector (Section 6.5) renders these, not raw message text.",
+      "properties": {
+        "provenance": {
+          "$ref": "#/$defs/ProvenanceRecord"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provenance",
+        "text"
+      ],
+      "title": "ContextSegment",
+      "type": "object"
+    },
+    "DetectionFlagPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Baseline Ref"
+        },
+        "candidate_triggers": {
+          "items": {
+            "$ref": "#/$defs/CandidateTrigger"
+          },
+          "title": "Candidate Triggers",
+          "type": "array"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "detector_id": {
+          "title": "Detector Id",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        }
+      },
+      "required": [
+        "severity",
+        "detector_id",
+        "description"
+      ],
+      "title": "DetectionFlagPayload",
+      "type": "object"
+    },
+    "FailMode": {
+      "enum": [
+        "fail_open",
+        "fail_closed"
+      ],
+      "title": "FailMode",
+      "type": "string"
+    },
+    "HumanContext": {
+      "additionalProperties": true,
+      "properties": {
+        "auth_method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Auth Method"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
+        },
+        "team": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Team"
+        }
+      },
+      "title": "HumanContext",
+      "type": "object"
+    },
+    "LifecycleEvent": {
+      "description": "agent_lifecycle payload events. Termination is an event WITHIN the\ntrace (I1) \u2014 never modeled as the trace ending. `status` on Session is\nthe summary; these events are the audit log that produced it.",
+      "enum": [
+        "started",
+        "completed",
+        "failed",
+        "terminated",
+        "contained",
+        "released"
+      ],
+      "title": "LifecycleEvent",
+      "type": "string"
+    },
+    "Message": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "title": "Content"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "title": "Message",
+      "type": "object"
+    },
+    "ModelCallPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "context_composition": {
+          "items": {
+            "$ref": "#/$defs/ContextSegment"
+          },
+          "title": "Context Composition",
+          "type": "array"
+        },
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/Message"
+          },
+          "title": "Messages",
+          "type": "array"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "system_prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "System Prompt"
+        },
+        "token_counts": {
+          "$ref": "#/$defs/TokenCounts"
+        },
+        "tools_offered": {
+          "items": {
+            "$ref": "#/$defs/ToolSchema"
+          },
+          "title": "Tools Offered",
+          "type": "array"
+        }
+      },
+      "required": [
+        "model",
+        "messages"
+      ],
+      "title": "ModelCallPayload",
+      "type": "object"
+    },
+    "ModelResponsePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "stop_reason": {
+          "title": "Stop Reason",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        },
+        "token_counts": {
+          "$ref": "#/$defs/TokenCounts"
+        },
+        "tool_calls": {
+          "items": {
+            "$ref": "#/$defs/ToolCallRequest"
+          },
+          "title": "Tool Calls",
+          "type": "array"
+        }
+      },
+      "required": [
+        "stop_reason"
+      ],
+      "title": "ModelResponsePayload",
+      "type": "object"
+    },
+    "PolicyDecision": {
+      "enum": [
+        "allow",
+        "deny",
+        "require_approval"
+      ],
+      "title": "PolicyDecision",
+      "type": "string"
+    },
+    "PolicyDecisionPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "decision": {
+          "$ref": "#/$defs/PolicyDecision"
+        },
+        "fail_mode": {
+          "$ref": "#/$defs/FailMode"
+        },
+        "policy_id": {
+          "title": "Policy Id",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "rule_matched": {
+          "title": "Rule Matched",
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision",
+        "policy_id",
+        "rule_matched",
+        "reason",
+        "fail_mode"
+      ],
+      "title": "PolicyDecisionPayload",
+      "type": "object"
+    },
+    "ProvenanceRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_range": {
+          "$ref": "#/$defs/ByteRange"
+        },
+        "content_id": {
+          "format": "uuid",
+          "title": "Content Id",
+          "type": "string"
+        },
+        "entered_at": {
+          "format": "date-time",
+          "title": "Entered At",
+          "type": "string"
+        },
+        "source_identifier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Identifier"
+        },
+        "source_step_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Step Id"
+        },
+        "source_tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Tool"
+        },
+        "source_type": {
+          "$ref": "#/$defs/SourceType"
+        },
+        "trust_level": {
+          "$ref": "#/$defs/TrustLevel"
+        }
+      },
+      "required": [
+        "source_type",
+        "trust_level",
+        "byte_range"
+      ],
+      "title": "ProvenanceRecord",
+      "type": "object"
+    },
+    "Session": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "agent_version": {
+          "title": "Agent Version",
+          "type": "string"
+        },
+        "containment": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContainmentInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "ended_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ended At"
+        },
+        "human_context": {
+          "$ref": "#/$defs/HumanContext"
+        },
+        "human_id": {
+          "title": "Human Id",
+          "type": "string"
+        },
+        "scenario_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scenario Id"
+        },
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus",
+          "default": "running"
+        },
+        "task_description": {
+          "title": "Task Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id",
+        "agent_version",
+        "human_id",
+        "task_description"
+      ],
+      "title": "Session",
+      "type": "object"
+    },
+    "SessionStatus": {
+      "enum": [
+        "running",
+        "completed",
+        "failed",
+        "contained",
+        "terminated"
+      ],
+      "title": "SessionStatus",
+      "type": "string"
+    },
+    "Severity": {
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "SourceType": {
+      "enum": [
+        "user_input",
+        "system_prompt",
+        "tool_result",
+        "agent_memory",
+        "sub_agent"
+      ],
+      "title": "SourceType",
+      "type": "string"
+    },
+    "Step": {
+      "additionalProperties": false,
+      "properties": {
+        "duration_ms": {
+          "default": 0,
+          "title": "Duration Ms",
+          "type": "integer"
+        },
+        "parent_step_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Step Id"
+        },
+        "payload": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelCallPayload"
+            },
+            {
+              "$ref": "#/$defs/ModelResponsePayload"
+            },
+            {
+              "$ref": "#/$defs/ToolRequestPayload"
+            },
+            {
+              "$ref": "#/$defs/ToolResultPayload"
+            },
+            {
+              "$ref": "#/$defs/PolicyDecisionPayload"
+            },
+            {
+              "$ref": "#/$defs/DetectionFlagPayload"
+            },
+            {
+              "$ref": "#/$defs/ContainmentEventPayload"
+            },
+            {
+              "$ref": "#/$defs/AgentLifecyclePayload"
+            }
+          ],
+          "title": "Payload"
+        },
+        "post_containment": {
+          "default": false,
+          "title": "Post Containment",
+          "type": "boolean"
+        },
+        "sequence": {
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "step_id": {
+          "format": "uuid",
+          "title": "Step Id",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/StepType"
+        }
+      },
+      "required": [
+        "session_id",
+        "sequence",
+        "type",
+        "payload"
+      ],
+      "title": "Step",
+      "type": "object"
+    },
+    "StepType": {
+      "enum": [
+        "model_call",
+        "model_response",
+        "tool_request",
+        "tool_result",
+        "policy_decision",
+        "detection_flag",
+        "containment_event",
+        "agent_lifecycle"
+      ],
+      "title": "StepType",
+      "type": "string"
+    },
+    "TokenCounts": {
+      "additionalProperties": false,
+      "properties": {
+        "completion": {
+          "default": 0,
+          "title": "Completion",
+          "type": "integer"
+        },
+        "prompt": {
+          "default": 0,
+          "title": "Prompt",
+          "type": "integer"
+        },
+        "total": {
+          "default": 0,
+          "title": "Total",
+          "type": "integer"
+        }
+      },
+      "title": "TokenCounts",
+      "type": "object"
+    },
+    "ToolCallRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {
+          "title": "Arguments",
+          "type": "object"
+        },
+        "tool_call_id": {
+          "title": "Tool Call Id",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_call_id",
+        "tool_name",
+        "arguments"
+      ],
+      "title": "ToolCallRequest",
+      "type": "object"
+    },
+    "ToolRequestPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {
+          "title": "Arguments",
+          "type": "object"
+        },
+        "requested_by": {
+          "format": "uuid",
+          "title": "Requested By",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_name",
+        "arguments",
+        "requested_by"
+      ],
+      "title": "ToolRequestPayload",
+      "type": "object"
+    },
+    "ToolResultPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "credential_ref": {
+          "title": "Credential Ref",
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "provenance": {
+          "$ref": "#/$defs/ProvenanceRecord"
+        },
+        "result": {
+          "title": "Result"
+        },
+        "sandbox_id": {
+          "title": "Sandbox Id",
+          "type": "string"
+        },
+        "success": {
+          "title": "Success",
+          "type": "boolean"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_name",
+        "success",
+        "result",
+        "credential_ref",
+        "sandbox_id",
+        "provenance"
+      ],
+      "title": "ToolResultPayload",
+      "type": "object"
+    },
+    "ToolSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "input_schema": {
+          "title": "Input Schema",
+          "type": "object"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ToolSchema",
+      "type": "object"
+    },
+    "Trace": {
+      "additionalProperties": false,
+      "description": "Convenience aggregate used by fixtures, the replay endpoint (I9), and\nincident export. Not itself part of the wire protocol between mediator\nand recorder \u2014 those exchange Session/Step individually.",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/Session"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/Step"
+          },
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "title": "Trace",
+      "type": "object"
+    },
+    "TrustLevel": {
+      "description": "Detection keys off this field (Section 5). Rules, verbatim from spec:\nsystem prompt and registered tool schemas -> trusted; authenticated user\ninput -> semi_trusted; anything retrieved from a data store -> untrusted.",
+      "enum": [
+        "trusted",
+        "semi_trusted",
+        "untrusted"
+      ],
+      "title": "TrustLevel",
+      "type": "string"
+    }
+  },
+  "$id": "https://blackbox.internal/schema/trace.schema.json",
+  "genai_semconv_version": "1.28.0-dev",
+  "schema_version": "1.0.0",
+  "title": "Blackbox Trace Schema"
+}
