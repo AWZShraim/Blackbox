@@ -22,6 +22,14 @@ from pydantic import BaseModel, Field
 
 from common.schema import StepType, Trace
 
+# Minimum learning-period sessions before a baseline's negative space (which
+# bigrams it never saw) is trustworthy enough to detect on. Below this,
+# "never observed" mostly means "not observed yet, in this small a sample"
+# rather than "abnormal" — sequence_anomaly (detector/detectors/
+# sequence_anomaly.py) gates on Baseline.is_mature rather than firing on a
+# baseline that just hasn't seen enough traffic yet.
+MIN_SESSIONS_FOR_MATURITY = 20
+
 
 class ArgumentShape(BaseModel):
     """Learned shape for one tool argument. Numeric args get a [min, max]
@@ -58,6 +66,29 @@ class Baseline(BaseModel):
 
     def has_sequence(self, prior_tool: str, tool: str) -> bool:
         return [prior_tool, tool] in self.sequences
+
+    @property
+    def is_mature(self) -> bool:
+        return self.sessions_observed >= MIN_SESSIONS_FOR_MATURITY
+
+
+def raise_if_immature(baseline: "Baseline", *, source: str) -> None:
+    """Called wherever a loaded baseline gets wired into a running mediator
+    or recorder (mediator/main.py, recorder/main.py) — a platform engineer
+    who explicitly pointed BLACKBOX_BASELINE_DIR at a thin baseline almost
+    certainly didn't mean to ship one that silently suppresses every
+    sequence_anomaly flag (Baseline.is_mature); better to fail loudly at
+    startup than to find out during an incident review."""
+    if not baseline.is_mature:
+        raise RuntimeError(
+            f"agent baseline loaded from {source!r} has sessions_observed="
+            f"{baseline.sessions_observed}, below MIN_SESSIONS_FOR_MATURITY="
+            f"{MIN_SESSIONS_FOR_MATURITY} — detector.detectors.sequence_anomaly "
+            "and the mediator's inline_sequence_anomaly check would silently "
+            "suppress every flag against it (detect() returns []). Re-run the "
+            "observe-only learning pass with more sessions before deploying "
+            "this baseline, or seed a mature one (see scenarios/demo/seed_baseline.py)."
+        )
 
 
 class BaselineStore:

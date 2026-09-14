@@ -14,7 +14,7 @@ _SEVERITY_BY_DECISION = {
 }
 
 
-def detect(trace: Trace, *, agent_baseline=None, human_baseline=None) -> list[ProposedFlag]:
+def detect(trace: Trace, *, agent_baseline=None, human_baseline=None, tool_registry=None) -> list[ProposedFlag]:
     flags: list[ProposedFlag] = []
     for step in trace.steps:
         if step.type != StepType.policy_decision:

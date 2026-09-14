@@ -35,6 +35,9 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://blackbox:blackbox@postgres:5432/blackbox
       ARCHIVE_S3_BUCKET: ""
+      BLACKBOX_BASELINE_DIR: /data/baselines
+    volumes:
+      - blackbox_baseline_data:/data/baselines
     ports:
       - "8010:8010"
     depends_on:
@@ -53,8 +56,10 @@ services:
       MEDIATOR_CLIENT_ID: ${MEDIATOR_CLIENT_ID:-demo-agent}
       MEDIATOR_CLIENT_SECRET: ${MEDIATOR_CLIENT_SECRET:-demo-secret-change-me}
       NORTHWIND_DB_PATH: /data/northwind.db
+      BLACKBOX_BASELINE_DIR: /data/baselines
     volumes:
       - blackbox_northwind_data:/data
+      - blackbox_baseline_data:/data/baselines
     ports:
       - "8000:8000"
     depends_on:
@@ -69,6 +74,21 @@ services:
       NORTHWIND_DB_PATH: /data/northwind.db
     volumes:
       - blackbox_northwind_data:/data
+    profiles: ["tools"] # run once via `make seed`, never part of `up`
+
+  seed-baseline:
+    build:
+      context: ..
+      dockerfile: deploy/docker/backend.Dockerfile
+    # Seeds the mature agent baseline mediator/recorder load via
+    # BLACKBOX_BASELINE_DIR above — without this, sequence_anomaly and
+    # inline_sequence_anomaly are a permanent no-op (see
+    # scenarios/demo/seed_baseline.py).
+    command: ["python", "-m", "scenarios.demo.seed_baseline"]
+    environment:
+      BLACKBOX_BASELINE_DIR: /data/baselines
+    volumes:
+      - blackbox_baseline_data:/data/baselines
     profiles: ["tools"] # run once via `make seed`, never part of `up`
 
   agent-runner:
@@ -133,3 +153,4 @@ services:
 volumes:
   blackbox_postgres_data:
   blackbox_northwind_data:
+  blackbox_baseline_data:

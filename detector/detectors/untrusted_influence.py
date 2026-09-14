@@ -19,7 +19,7 @@ from .base import ProposedFlag
 _WINDOW_STEPS = 4
 
 
-def detect(trace: Trace, *, agent_baseline=None, human_baseline=None) -> list[ProposedFlag]:
+def detect(trace: Trace, *, agent_baseline=None, human_baseline=None, tool_registry=None) -> list[ProposedFlag]:
     flags: list[ProposedFlag] = []
     for i, step in enumerate(trace.steps):
         if step.type != StepType.model_call:

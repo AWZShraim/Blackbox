@@ -23,7 +23,7 @@ def _is_external_send(step) -> bool:
     return bool(to) and not to.endswith(_INTERNAL_EMAIL_DOMAIN)
 
 
-def detect(trace: Trace, *, agent_baseline=None, human_baseline=None) -> list[ProposedFlag]:
+def detect(trace: Trace, *, agent_baseline=None, human_baseline=None, tool_registry=None) -> list[ProposedFlag]:
     flags: list[ProposedFlag] = []
     read_seen = False
     for step in trace.steps:

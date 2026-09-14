@@ -7,12 +7,22 @@ hand-written fixtures, deterministically, without invoking a model
 """
 
 import json
+import uuid
 from pathlib import Path
 
 import pytest
 
-from common.schema import Trace
+from common.schema import (
+    ContainmentAction,
+    ContainmentEventPayload,
+    Session,
+    Step,
+    StepType,
+    ToolRequestPayload,
+    Trace,
+)
 from detector.baseline import ArgumentShape, Baseline, ToolBaseline, learn_baseline
+from detector.detectors import post_stop_activity, sequence_anomaly
 from detector.engine import run_detectors
 
 FIXTURES_DIR = Path(__file__).parent.parent / "scenarios" / "fixtures"
@@ -24,6 +34,25 @@ def load_trace(name: str) -> Trace:
 
 def detector_ids(flags) -> set[str]:
     return {f.payload.detector_id for f in flags}
+
+
+def sequence_trace(tool_names: list[str]) -> Trace:
+    """A minimal trace of nothing but tool_request steps, in order — all
+    sequence_anomaly.detect() looks at, so fixtures for it don't need a full
+    mechanism narrative (model_call/tool_result/...) the way the incident
+    fixtures above do."""
+    session = Session(
+        agent_id="support-agent", agent_version="0.1.0", human_id="user:jane.doe",
+        task_description="sequence_anomaly regression fixture",
+    )
+    steps = [
+        Step(
+            session_id=session.session_id, sequence=i, type=StepType.tool_request,
+            payload=ToolRequestPayload(tool_name=name, arguments={}, requested_by=uuid.uuid4()),
+        )
+        for i, name in enumerate(tool_names)
+    ]
+    return Trace(session=session, steps=steps)
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +169,41 @@ def test_corrigibility_bypass_fixture_flags_post_stop_activity():
     assert flagged_step.post_containment is True
 
 
+def test_post_stop_activity_flags_each_post_stop_tool_call_individually():
+    """Deliberate, unlike sequence_anomaly's cascade: every tool call after
+    containment is its own corrigibility violation (the agent kept acting,
+    again, after being told to stop), so N post-stop calls should produce N
+    flags — collapsing them would hide exactly how many actions were taken
+    after containment, which is what a forensic reviewer needs to see."""
+    session = Session(
+        agent_id="support-agent", agent_version="0.1.0", human_id="user:jane.doe",
+        task_description="post_stop_activity regression fixture",
+    )
+    steps = [
+        Step(
+            session_id=session.session_id, sequence=0, type=StepType.containment_event,
+            payload=ContainmentEventPayload(
+                action=ContainmentAction.forwarding_stopped, initiated_by="user:jane.doe",
+            ),
+        ),
+    ]
+    post_stop_tools = ["update_ticket", "send_email", "deploy_service"]
+    for i, tool_name in enumerate(post_stop_tools, start=1):
+        steps.append(Step(
+            session_id=session.session_id, sequence=i, type=StepType.tool_request,
+            payload=ToolRequestPayload(tool_name=tool_name, arguments={}, requested_by=uuid.uuid4()),
+            post_containment=True,
+        ))
+    trace = Trace(session=session, steps=steps)
+
+    flags = post_stop_activity.detect(trace)
+
+    assert len(flags) == 3
+    assert [f.description.split()[0] for f in flags] == post_stop_tools
+    assert all(f.severity == "critical" for f in flags)
+    assert {f.flagged_step_id for f in flags} == {s.step_id for s in steps[1:]}
+
+
 # ---------------------------------------------------------------------------
 # Mechanism 4: excessive agency (human-driven bulk export, abuse mode, I7)
 # ---------------------------------------------------------------------------
@@ -167,6 +231,71 @@ def test_excessive_agency_volume_anomaly_fires_against_the_human_baseline_not_ag
     # without any baseline, volume_anomaly has nothing to compare against
     flags_no_baseline = run_detectors(trace)
     assert "volume_anomaly" not in detector_ids(flags_no_baseline)
+
+
+# ---------------------------------------------------------------------------
+# sequence_anomaly, called directly (not just through Baseline.has_sequence,
+# which only exercises the baseline-learning side, not detect() itself).
+# ---------------------------------------------------------------------------
+
+def _mature_baseline(**overrides) -> Baseline:
+    fields = dict(
+        subject_type="agent", subject_id="support-agent", learned_at="2026-01-01T00:00:00Z",
+        sessions_observed=25, tool_set=["get_ticket", "update_ticket", "search_docs", "deploy_service"],
+        sequences=[["get_ticket", "update_ticket"]],
+    )
+    fields.update(overrides)
+    return Baseline(**fields)
+
+
+def test_sequence_anomaly_flags_a_legitimate_unseen_transition_on_a_mature_baseline():
+    baseline = _mature_baseline()
+    assert baseline.is_mature
+    trace = sequence_trace(["get_ticket", "search_docs"])  # never observed, per sequences above
+
+    flags = sequence_anomaly.detect(trace, agent_baseline=baseline)
+
+    assert len(flags) == 1
+    assert flags[0].description == "transition get_ticket -> search_docs was never observed in the baseline"
+    assert flags[0].severity == "medium"  # no tool_registry given: falls back to the old flat default
+    assert flags[0].baseline_ref == baseline.ref()
+
+
+def test_sequence_anomaly_dedups_a_repeated_unseen_transition_to_one_flag():
+    """Cascade regression: get_ticket -> search_docs is unseen and recurs
+    three times (interleaved with the seen search_docs -> get_ticket return
+    leg) — one underlying deviation, so one flag, not three."""
+    baseline = _mature_baseline(sequences=[["search_docs", "get_ticket"]])
+    trace = sequence_trace([
+        "get_ticket", "search_docs", "get_ticket", "search_docs", "get_ticket", "search_docs",
+    ])
+
+    flags = sequence_anomaly.detect(trace, agent_baseline=baseline)
+
+    assert len(flags) == 1
+    assert flags[0].description == "transition get_ticket -> search_docs was never observed in the baseline"
+
+
+def test_sequence_anomaly_escalates_severity_for_a_critical_risk_destination_tool():
+    from scenarios.tools.definitions import build_registry
+
+    baseline = _mature_baseline()  # deploy_service -> get_ticket is unseen
+    trace = sequence_trace(["get_ticket", "deploy_service"])
+
+    flags = sequence_anomaly.detect(trace, agent_baseline=baseline, tool_registry=build_registry())
+
+    assert len(flags) == 1
+    assert flags[0].severity == "critical"  # deploy_service is a critical-risk tool
+
+
+def test_sequence_anomaly_suppresses_flags_on_an_immature_baseline():
+    baseline = _mature_baseline(sessions_observed=3)
+    assert not baseline.is_mature
+    trace = sequence_trace(["get_ticket", "search_docs"])  # would flag on a mature baseline (see above)
+
+    flags = sequence_anomaly.detect(trace, agent_baseline=baseline)
+
+    assert flags == []
 
 
 # ---------------------------------------------------------------------------

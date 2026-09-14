@@ -10,6 +10,7 @@
 #   cp .env.example .env   # fill in DOMAIN, ANTHROPIC_API_KEY, etc.
 #   docker compose up -d --build
 #   docker compose run --rm seed
+#   docker compose run --rm seed-baseline
 
 services:
   postgres:
@@ -37,6 +38,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://blackbox:${POSTGRES_PASSWORD}@postgres:5432/blackbox
       ARCHIVE_S3_BUCKET: ${ARCHIVE_S3_BUCKET:-}
       AWS_REGION: ${AWS_REGION:-}
+      BLACKBOX_BASELINE_DIR: /data/baselines
+    volumes:
+      - blackbox_baseline_data:/data/baselines
     depends_on:
       postgres:
         condition: service_healthy
@@ -55,8 +59,10 @@ services:
       MEDIATOR_CLIENT_SECRET: ${MEDIATOR_CLIENT_SECRET:?set a real secret in .env}
       BLACKBOX_OPERATOR_KEY: ${BLACKBOX_OPERATOR_KEY:?set a real key in .env}
       NORTHWIND_DB_PATH: /data/northwind.db
+      BLACKBOX_BASELINE_DIR: /data/baselines
     volumes:
       - blackbox_northwind_data:/data
+      - blackbox_baseline_data:/data/baselines
     depends_on:
       - recorder
 
@@ -108,6 +114,21 @@ services:
       - blackbox_northwind_data:/data
     profiles: ["tools"] # `docker compose run --rm seed`, not part of `up`
 
+  seed-baseline:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/backend.Dockerfile
+    # Seeds the mature agent baseline mediator/recorder load via
+    # BLACKBOX_BASELINE_DIR above — without this, sequence_anomaly and
+    # inline_sequence_anomaly are a permanent no-op (see
+    # scenarios/demo/seed_baseline.py).
+    command: ["python", "-m", "scenarios.demo.seed_baseline"]
+    environment:
+      BLACKBOX_BASELINE_DIR: /data/baselines
+    volumes:
+      - blackbox_baseline_data:/data/baselines
+    profiles: ["tools"] # `docker compose run --rm seed-baseline`, not part of `up`
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -126,5 +147,6 @@ services:
 volumes:
   blackbox_postgres_data:
   blackbox_northwind_data:
+  blackbox_baseline_data:
   blackbox_caddy_data:
   blackbox_caddy_config:

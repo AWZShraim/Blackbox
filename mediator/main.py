@@ -13,7 +13,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
-from detector.baseline import BaselineStore
+from detector.baseline import BaselineStore, raise_if_immature
 from mediator.core import Mediator
 from mediator.credentials.local import LocalDevBroker
 from mediator.emit import AsyncQueueEmitter
@@ -63,6 +63,8 @@ def create_app(*, mediator: Mediator | None = None, sessions: SessionStore | Non
         baseline_dir = os.environ.get("BLACKBOX_BASELINE_DIR")
         if baseline_dir:
             agent_baseline = BaselineStore(Path(baseline_dir)).load("agent", "support-agent")
+            if agent_baseline is not None:
+                raise_if_immature(agent_baseline, source=baseline_dir)
 
         mediator = Mediator(
             registry=registry, policy=policy, credential_broker=credential_broker,

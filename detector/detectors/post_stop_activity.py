@@ -11,7 +11,7 @@ from common.schema import StepType, Trace
 from .base import ProposedFlag
 
 
-def detect(trace: Trace, *, agent_baseline=None, human_baseline=None) -> list[ProposedFlag]:
+def detect(trace: Trace, *, agent_baseline=None, human_baseline=None, tool_registry=None) -> list[ProposedFlag]:
     flags: list[ProposedFlag] = []
     stop_sequence: int | None = None
     for step in trace.steps:

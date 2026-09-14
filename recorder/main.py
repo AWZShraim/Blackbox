@@ -22,7 +22,7 @@ from fastapi import FastAPI, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
 from common.schema import Session, SessionStatus, Step, StepType
-from detector.baseline import BaselineStore
+from detector.baseline import BaselineStore, raise_if_immature
 from detector.engine import run_detectors
 from recorder.broadcast import SessionBroadcaster
 from recorder.exporters.stdout_exporter import StdoutExporter
@@ -46,6 +46,7 @@ _Event = Union[Session, Step]
 def create_app(
     *, store: PostgresStore | None = None, archive=None, exporters=None,
     baseline_store: BaselineStore | None = None, run_detection: bool = True,
+    tool_registry=None,
 ) -> FastAPI:
     database_url = os.environ.get(
         "DATABASE_URL", "postgresql+asyncpg://blackbox:blackbox@localhost:5432/blackbox"
@@ -61,6 +62,25 @@ def create_app(
     if baseline_store is None:
         baseline_dir = os.environ.get("BLACKBOX_BASELINE_DIR")
         baseline_store = BaselineStore(Path(baseline_dir)) if baseline_dir else None
+        if baseline_store is not None:
+            # The recorder is agent-agnostic in general (baseline_store.load
+            # happens per-session for whatever agent_id shows up in the
+            # trace) — but "support-agent" is, in practice, the only agent
+            # this whole system runs today (mediator/main.py hardcodes the
+            # same id for its own inline-check baseline), so checking it
+            # here at startup is the same "demo setup" fail-loud spot as
+            # mediator/main.py's, not a new assumption.
+            demo_baseline = baseline_store.load("agent", "support-agent")
+            if demo_baseline is not None:
+                raise_if_immature(demo_baseline, source=baseline_dir)
+
+    if tool_registry is None:
+        # Same catalogue the mediator and demo orchestrator build from
+        # (mediator/main.py, scenarios/demo/main.py) — sequence_anomaly
+        # (detector/detectors/sequence_anomaly.py) reads tool risk from it
+        # to size severity, rather than always flagging "medium".
+        from scenarios.tools.definitions import build_registry
+        tool_registry = build_registry()
 
     queue: asyncio.Queue[_Event] = asyncio.Queue(maxsize=20_000)
     state = {"drop_count": 0, "drain_task": None}
@@ -82,6 +102,7 @@ def create_app(
                 await _process_event(
                     event, store=store, archive=archive, exporters=active_exporters,
                     baseline_store=baseline_store, run_detection=run_detection, broadcaster=broadcaster,
+                    tool_registry=tool_registry,
                 )
             except Exception:  # noqa: BLE001 - one bad event must not kill the drain loop
                 logger.exception("blackbox recorder: failed to process event")
@@ -185,6 +206,7 @@ def create_app(
 async def _process_event(
     event: _Event, *, store: PostgresStore, archive, exporters: list,
     baseline_store: BaselineStore | None, run_detection: bool, broadcaster: SessionBroadcaster,
+    tool_registry=None,
 ) -> None:
     if isinstance(event, Session):
         await store.upsert_session(event)
@@ -212,13 +234,13 @@ async def _process_event(
     if run_detection and event.type != StepType.detection_flag and session is not None:
         await _run_detection_and_persist(
             session.session_id, store=store, exporters=exporters,
-            baseline_store=baseline_store, broadcaster=broadcaster,
+            baseline_store=baseline_store, broadcaster=broadcaster, tool_registry=tool_registry,
         )
 
 
 async def _run_detection_and_persist(
     session_id, *, store: PostgresStore, exporters: list,
-    baseline_store: BaselineStore | None, broadcaster: SessionBroadcaster,
+    baseline_store: BaselineStore | None, broadcaster: SessionBroadcaster, tool_registry=None,
 ) -> None:
     trace = await store.get_trace(session_id)
     if trace is None:
@@ -234,7 +256,9 @@ async def _run_detection_and_persist(
     human_baseline = baseline_store.load("human", trace.session.human_id) if baseline_store else None
 
     new_flag_steps = [
-        s for s in run_detectors(trace, agent_baseline=agent_baseline, human_baseline=human_baseline)
+        s for s in run_detectors(
+            trace, agent_baseline=agent_baseline, human_baseline=human_baseline, tool_registry=tool_registry,
+        )
         if (s.payload.detector_id, s.parent_step_id) not in already_flagged
     ]
     for flag_step in new_flag_steps:

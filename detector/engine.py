@@ -8,6 +8,8 @@ reads a cached baseline and never calls into this module directly.
 
 from __future__ import annotations
 
+from typing import Any
+
 from common.schema import CandidateTrigger, DetectionFlagPayload, Step, StepType, Trace
 
 from .baseline import Baseline
@@ -39,16 +41,25 @@ _DETECTORS = [
 
 def run_detectors(
     trace: Trace, *, agent_baseline: Baseline | None = None, human_baseline: Baseline | None = None,
+    tool_registry: Any = None,
 ) -> list[Step]:
     """Returns new `detection_flag` Steps (not yet appended to the trace,
     sequence numbers continuing from where it left off) — one per proposed
-    flag, each with a ranked candidate-trigger list attached."""
+    flag, each with a ranked candidate-trigger list attached.
+
+    `tool_registry`, like the baselines, is passed uniformly to every
+    detector even though only sequence_anomaly currently reads it (severity
+    by destination-tool risk class) — duck-typed as anything with `.get(name)`
+    returning an object with a `.risk`, so this module doesn't need to
+    import mediator.execution.registry.ToolRegistry just for a type hint."""
     steps_by_id = {s.step_id: s for s in trace.steps}
     next_sequence = (max((s.sequence for s in trace.steps), default=-1)) + 1
 
     detection_steps: list[Step] = []
     for module in _DETECTORS:
-        proposed = module.detect(trace, agent_baseline=agent_baseline, human_baseline=human_baseline)
+        proposed = module.detect(
+            trace, agent_baseline=agent_baseline, human_baseline=human_baseline, tool_registry=tool_registry,
+        )
         for flag in proposed:
             flagged_step = steps_by_id[flag.flagged_step_id]
             triggers: list[CandidateTrigger] = rank_candidate_triggers(trace, flagged_step)

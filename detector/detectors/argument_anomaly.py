@@ -14,7 +14,7 @@ from .base import ProposedFlag
 _NUMERIC_TOLERANCE = 1.2
 
 
-def detect(trace: Trace, *, agent_baseline=None, human_baseline=None) -> list[ProposedFlag]:
+def detect(trace: Trace, *, agent_baseline=None, human_baseline=None, tool_registry=None) -> list[ProposedFlag]:
     if agent_baseline is None:
         return []
     flags: list[ProposedFlag] = []

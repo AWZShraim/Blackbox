@@ -15,6 +15,7 @@ logs:
 
 seed:
 	$(COMPOSE) run --rm seed
+	$(COMPOSE) run --rm seed-baseline
 
 # make scenario SCENARIO=ticket_injection_exfil
 scenario:

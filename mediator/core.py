@@ -44,6 +44,7 @@ from common.schema import (
     utcnow,
 )
 from detector.baseline import Baseline
+from detector.detectors.sequence_anomaly import evaluate_transition
 from mediator.execution.registry import ToolRegistry
 from mediator.execution.sandbox import Sandbox
 from mediator.latency import LatencyTracker
@@ -158,6 +159,12 @@ class _SessionState:
     tokens_spent: int = 0
     last_tool_name: str | None = None
     tool_call_count: int = 0
+    # (prior_tool, tool) pairs already flagged by inline_sequence_anomaly
+    # this session — same dedup-by-pair rule as the batch sequence_anomaly
+    # detector (detector/detectors/sequence_anomaly.py), so a transition
+    # the agent keeps repeating doesn't flood the live trace with one
+    # inline flag per occurrence.
+    flagged_sequence_pairs: set[tuple[str, str]] = field(default_factory=set)
 
     def next_sequence(self) -> int:
         seq = self.sequence
@@ -374,7 +381,16 @@ class Mediator:
         sequence_anomaly / volume_anomaly, which score every call against
         the whole trace after the fact. `inline_*` detector_ids keep the
         two paths visibly distinct rather than silently double-flagging
-        under the same id."""
+        under the same id.
+
+        The sequence check below calls detector.detectors.sequence_anomaly.
+        evaluate_transition — the same severity-by-risk and maturity-gate
+        logic the batch detector uses — rather than reimplementing the rule
+        here. The two paths still can't share the full walk (this one only
+        ever has one cached last_tool_name, not the whole trace, since
+        re-fetching it here would blow the <10ms p99 budget Section 6.2
+        sets for this step), so the *shape* of the check stays split, but
+        what counts as anomalous and how severe it is cannot."""
         if self._agent_baseline is not None:
             tool_baseline = self._agent_baseline.tools.get(tool_name)
             if tool_baseline is not None:
@@ -392,16 +408,20 @@ class Mediator:
                             description=f"{tool_name}({arg_name}={arg_value!r}) is outside the learned range",
                             baseline_ref=self._agent_baseline.ref(),
                         )
-            if (
-                state.last_tool_name is not None and self._agent_baseline.sequences
-                and tool_name in self._agent_baseline.tool_set and state.last_tool_name in self._agent_baseline.tool_set
-                and not self._agent_baseline.has_sequence(state.last_tool_name, tool_name)
-            ):
-                return DetectionFlagPayload(
-                    severity="medium", detector_id="inline_sequence_anomaly",
-                    description=f"transition {state.last_tool_name} -> {tool_name} was never observed in the baseline",
-                    baseline_ref=self._agent_baseline.ref(),
-                )
+            if state.last_tool_name is not None:
+                pair = (state.last_tool_name, tool_name)
+                if pair not in state.flagged_sequence_pairs:
+                    result = evaluate_transition(
+                        state.last_tool_name, tool_name,
+                        agent_baseline=self._agent_baseline, tool_registry=self._registry,
+                    )
+                    if result is not None:
+                        severity, description = result
+                        state.flagged_sequence_pairs.add(pair)
+                        return DetectionFlagPayload(
+                            severity=severity, detector_id="inline_sequence_anomaly",
+                            description=description, baseline_ref=self._agent_baseline.ref(),
+                        )
 
         human_baseline = self._human_baselines.get(state.session.human_id)
         if human_baseline is not None and human_baseline.calls_per_session_max > 0:

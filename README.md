@@ -40,6 +40,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # fill in ANTHROPIC_API_KEY
 python -m scenarios.company.seed
+python -m scenarios.demo.seed_baseline   # without this, sequence_anomaly never fires (baselines are opt-in)
 pytest
 ```
 
@@ -53,10 +54,12 @@ Compose once you have Docker — see below):
 
 # 2. Recorder
 DATABASE_URL=postgresql+asyncpg://blackbox:blackbox@localhost:5432/blackbox \
+  BLACKBOX_BASELINE_DIR=scenarios/demo/.baselines \
   uvicorn recorder.main:app --port 8010
 
 # 3. Mediator
-RECORDER_URL=http://localhost:8010 uvicorn mediator.main:app --port 8000
+RECORDER_URL=http://localhost:8010 BLACKBOX_BASELINE_DIR=scenarios/demo/.baselines \
+  uvicorn mediator.main:app --port 8000
 
 # 4. Demo orchestrator (Section 8)
 MEDIATOR_URL=http://localhost:8000 RECORDER_URL=http://localhost:8010 \
@@ -65,6 +68,13 @@ MEDIATOR_URL=http://localhost:8000 RECORDER_URL=http://localhost:8010 \
 # 5. Investigator
 cd investigator && npm install && npm run dev
 ```
+
+`BLACKBOX_BASELINE_DIR` is optional — baselines are opt-in (Section 6.4).
+Without it, `sequence_anomaly` and the mediator's `inline_sequence_anomaly`
+check are always a no-op, never a false "assume anomalous" default. Both
+`create_app()`s fail loudly at startup if the baseline they load is too
+thin to trust (`detector.baseline.MIN_SESSIONS_FOR_MATURITY`) rather than
+silently suppressing every flag against it.
 
 Then open `http://localhost:3000` — the landing page is the scenario
 picker (Section 8): pick a live or recorded scenario, watch it stream in,

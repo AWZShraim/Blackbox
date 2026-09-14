@@ -230,6 +230,62 @@ async def test_inline_baseline_check_flags_an_out_of_range_argument_at_call_time
 
 
 @pytest.mark.asyncio
+async def test_inline_sequence_anomaly_shares_severity_by_risk_with_the_batch_detector(db_path):
+    """inline_sequence_anomaly (the synchronous, single-call path) must
+    agree with detector.detectors.sequence_anomaly.detect() (the batch,
+    full-trace path) on severity — both call the same evaluate_transition,
+    so a live flag and the later stored flag for the same transition can't
+    disagree."""
+    from detector.baseline import Baseline
+
+    baseline = Baseline(
+        subject_type="agent", subject_id="support-agent", learned_at="2026-01-01T00:00:00Z",
+        sessions_observed=25, tool_set=["get_ticket", "deploy_service"],
+        sequences=[["deploy_service", "get_ticket"]],  # not get_ticket -> deploy_service
+    )
+    mediator, collector = make_mediator(db_path=db_path, agent_baseline=baseline)
+    session = await mediator.create_session(
+        agent_id="a", agent_version="0.1.0", human_id="user:jane", task_description="x",
+    )
+    await mediator.handle_tool_call(
+        session_id=session.session_id, tool_name="get_ticket", arguments={"id": 1}, tool_call_id="c1",
+    )
+    with pytest.raises(ToolNotAllowed):  # deploy_service requires approval regardless
+        await mediator.handle_tool_call(
+            session_id=session.session_id, tool_name="deploy_service",
+            arguments={"name": "api", "version": "1.2.3"}, tool_call_id="c2",
+        )
+    flag_step = next(s for s in collector.steps if s.type.value == "detection_flag")
+    assert flag_step.payload.detector_id == "inline_sequence_anomaly"
+    assert flag_step.payload.severity == "critical"  # deploy_service's risk class, not a flat "medium"
+
+
+@pytest.mark.asyncio
+async def test_inline_sequence_anomaly_respects_the_maturity_gate(db_path):
+    from detector.baseline import Baseline
+
+    immature_baseline = Baseline(
+        subject_type="agent", subject_id="support-agent", learned_at="2026-01-01T00:00:00Z",
+        sessions_observed=3, tool_set=["get_ticket", "deploy_service"],
+        sequences=[["deploy_service", "get_ticket"]],
+    )
+    mediator, collector = make_mediator(db_path=db_path, agent_baseline=immature_baseline)
+    session = await mediator.create_session(
+        agent_id="a", agent_version="0.1.0", human_id="user:jane", task_description="x",
+    )
+    await mediator.handle_tool_call(
+        session_id=session.session_id, tool_name="get_ticket", arguments={"id": 1}, tool_call_id="c1",
+    )
+    with pytest.raises(ToolNotAllowed):
+        await mediator.handle_tool_call(
+            session_id=session.session_id, tool_name="deploy_service",
+            arguments={"name": "api", "version": "1.2.3"}, tool_call_id="c2",
+        )
+    flags = [s for s in collector.steps if s.type.value == "detection_flag"]
+    assert not any(f.payload.detector_id == "inline_sequence_anomaly" for f in flags)
+
+
+@pytest.mark.asyncio
 async def test_inline_baseline_check_flags_human_volume_deviation(db_path):
     from detector.baseline import Baseline
 

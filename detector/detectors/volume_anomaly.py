@@ -35,5 +35,5 @@ def _flag_for(trace: Trace, baseline, subject_label: str) -> list[ProposedFlag]:
     )]
 
 
-def detect(trace: Trace, *, agent_baseline=None, human_baseline=None) -> list[ProposedFlag]:
+def detect(trace: Trace, *, agent_baseline=None, human_baseline=None, tool_registry=None) -> list[ProposedFlag]:
     return _flag_for(trace, agent_baseline, "agent") + _flag_for(trace, human_baseline, "human")
