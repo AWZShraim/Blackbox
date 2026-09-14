@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "investigator",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "investigator", "run", "dev"],
+      "port": 3000
+    }
+  ]
+}

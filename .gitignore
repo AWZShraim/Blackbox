@@ -19,3 +19,4 @@ build/
 *.log
 investigator/.env*
 scenarios/company/*.db
+recorder/.archive/
