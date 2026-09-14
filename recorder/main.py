@@ -19,10 +19,12 @@ from typing import Union
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from sse_starlette.sse import EventSourceResponse
 
 from common.schema import Session, SessionStatus, Step, StepType
 from detector.baseline import BaselineStore
 from detector.engine import run_detectors
+from recorder.broadcast import SessionBroadcaster
 from recorder.exporters.stdout_exporter import StdoutExporter
 from recorder.store.postgres import PostgresStore
 from recorder.store.s3_archive import LocalDiskArchive, S3ObjectLockArchive
@@ -62,6 +64,7 @@ def create_app(
 
     queue: asyncio.Queue[_Event] = asyncio.Queue(maxsize=20_000)
     state = {"drop_count": 0, "drain_task": None}
+    broadcaster = SessionBroadcaster()
 
     def enqueue(event: _Event) -> None:
         try:
@@ -78,7 +81,7 @@ def create_app(
             try:
                 await _process_event(
                     event, store=store, archive=archive, exporters=active_exporters,
-                    baseline_store=baseline_store, run_detection=run_detection,
+                    baseline_store=baseline_store, run_detection=run_detection, broadcaster=broadcaster,
                 )
             except Exception:  # noqa: BLE001 - one bad event must not kill the drain loop
                 logger.exception("blackbox recorder: failed to process event")
@@ -134,6 +137,44 @@ def create_app(
         steps = await store.search_steps_by_content_identifier(identifier, limit=limit)
         return [s.model_dump(mode="json") for s in steps]
 
+    @app.get("/sessions/{session_id}/stream")
+    async def stream_session(session_id: str):
+        """I9: live and recorded traces render over the same channel. This
+        sends the full trace so far immediately, then tails new events as
+        they land — a viewer opening this mid-run and one opening it after
+        the fact see the same event shapes in the same order, just with
+        different timing. The replay endpoint (M10) emits over this exact
+        shape with synthetic timing instead of real."""
+        sid = uuid.UUID(session_id)
+
+        async def event_gen():
+            trace = await store.get_trace(sid)
+            if trace is None:
+                yield {"event": "error", "data": "unknown session"}
+                return
+            yield {"event": "session", "data": trace.session.model_dump_json()}
+            for step in trace.steps:
+                yield {"event": "step", "data": step.model_dump_json()}
+
+            live_terminal = {"completed", "failed", "terminated"}
+            if trace.session.status.value in live_terminal:
+                return  # nothing more will ever arrive for a session that's already done
+
+            sub = broadcaster.subscribe(sid)
+            try:
+                while True:
+                    event = await sub.get()
+                    if isinstance(event, Session):
+                        yield {"event": "session", "data": event.model_dump_json()}
+                        if event.status.value in live_terminal:
+                            return
+                    else:
+                        yield {"event": "step", "data": event.model_dump_json()}
+            finally:
+                broadcaster.unsubscribe(sid, sub)
+
+        return EventSourceResponse(event_gen())
+
     @app.get("/health")
     async def health() -> dict:
         return {"status": "ok", "queue_depth": queue.qsize(), "drop_count": state["drop_count"]}
@@ -143,12 +184,13 @@ def create_app(
 
 async def _process_event(
     event: _Event, *, store: PostgresStore, archive, exporters: list,
-    baseline_store: BaselineStore | None, run_detection: bool,
+    baseline_store: BaselineStore | None, run_detection: bool, broadcaster: SessionBroadcaster,
 ) -> None:
     if isinstance(event, Session):
         await store.upsert_session(event)
         for exporter in exporters:
             await exporter.export_session(event)
+        broadcaster.publish(event.session_id, event)
         if event.status in ARCHIVE_ON_STATUSES:
             trace = await store.get_trace(event.session_id)
             if trace is not None:
@@ -160,6 +202,7 @@ async def _process_event(
     if session is not None:
         for exporter in exporters:
             await exporter.export_step(session, event)
+    broadcaster.publish(event.session_id, event)
 
     # Detection runs on the trace stream (Section 6.4), not in the
     # mediator's request path — this is that stream. Skip re-running it
@@ -167,11 +210,15 @@ async def _process_event(
     # takes a detection_flag step as an input signal, so this can't loop,
     # but there's no reason to pay for the trace fetch either.
     if run_detection and event.type != StepType.detection_flag and session is not None:
-        await _run_detection_and_persist(session.session_id, store=store, exporters=exporters, baseline_store=baseline_store)
+        await _run_detection_and_persist(
+            session.session_id, store=store, exporters=exporters,
+            baseline_store=baseline_store, broadcaster=broadcaster,
+        )
 
 
 async def _run_detection_and_persist(
-    session_id, *, store: PostgresStore, exporters: list, baseline_store: BaselineStore | None,
+    session_id, *, store: PostgresStore, exporters: list,
+    baseline_store: BaselineStore | None, broadcaster: SessionBroadcaster,
 ) -> None:
     trace = await store.get_trace(session_id)
     if trace is None:
@@ -195,6 +242,7 @@ async def _run_detection_and_persist(
         session = trace.session
         for exporter in exporters:
             await exporter.export_step(session, flag_step)
+        broadcaster.publish(session_id, flag_step)
 
 
 app = create_app()

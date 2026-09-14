@@ -32,3 +32,17 @@ async def postgres_store(postgres_dsn):
     await store.create_tables()
     yield store
     await store.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _reset_sse_starlette_app_status():
+    """sse_starlette caches a module-level asyncio.Event the first time
+    it's used, bound to whatever event loop was running then. pytest-asyncio
+    gives each test function its own loop, so without this reset the
+    second SSE test in a run fails with 'bound to a different event loop'
+    — a known sse_starlette gotcha, not a bug in our streaming code."""
+    from sse_starlette.sse import AppStatus
+
+    AppStatus.should_exit_event = None
+    yield
+    AppStatus.should_exit_event = None

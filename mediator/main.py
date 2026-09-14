@@ -18,6 +18,7 @@ from mediator.core import Mediator
 from mediator.credentials.local import LocalDevBroker
 from mediator.emit import AsyncQueueEmitter
 from mediator.execution.sandbox import SubprocessSandbox
+from mediator.ingress.containment import build_containment_router
 from mediator.ingress.mcp import build_mcp_asgi_app
 from mediator.ingress.messages import build_messages_router
 from mediator.ingress.session import SessionStore, build_session_router
@@ -94,6 +95,7 @@ def create_app(*, mediator: Mediator | None = None, sessions: SessionStore | Non
 
     app.include_router(build_session_router(mediator, sessions))
     app.include_router(build_messages_router(mediator, sessions))
+    app.include_router(build_containment_router(mediator))
 
     @app.get("/healthz")
     async def healthz():

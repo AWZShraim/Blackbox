@@ -1,5 +1,6 @@
 import clsx from "clsx";
 import type { Session } from "@/lib/types";
+import { ContainmentControl } from "./ContainmentControl";
 
 const STATUS_COLOR: Record<Session["status"], string> = {
   running: "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
@@ -44,6 +45,7 @@ export function SessionHeader({ session }: { session: Session }) {
           </div>
         )}
       </dl>
+      <ContainmentControl session={session} />
     </header>
   );
 }
