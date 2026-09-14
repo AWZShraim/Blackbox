@@ -1,0 +1,95 @@
+# Local development (Section 10).
+#
+# Even here, the agent talks to the mediator over HTTP, and the mediator
+# talks to the recorder over HTTP — never shared memory, never a shared
+# file, never a library import. That costs nothing and means the
+# architecture is already correct, and it is what makes "kill the agent
+# container, watch the trace keep recording" (I1) a demo you can actually
+# run, not just a design claim.
+#
+# Usage: see the Makefile at repo root (`make up`, `make seed`,
+# `make scenario SCENARIO=...`, `make test`).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: blackbox
+      POSTGRES_PASSWORD: blackbox
+      POSTGRES_DB: blackbox
+    ports:
+      - "5432:5432"
+    volumes:
+      - blackbox_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blackbox"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  recorder:
+    build:
+      context: ..
+      dockerfile: deploy/docker/backend.Dockerfile
+    command: ["uvicorn", "recorder.main:app", "--host", "0.0.0.0", "--port", "8010"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://blackbox:blackbox@postgres:5432/blackbox
+      ARCHIVE_S3_BUCKET: ""
+    ports:
+      - "8010:8010"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  mediator:
+    build:
+      context: ..
+      dockerfile: deploy/docker/backend.Dockerfile
+    command: ["uvicorn", "mediator.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      RECORDER_URL: http://recorder:8010
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      MEDIATOR_CLIENT_ID: ${MEDIATOR_CLIENT_ID:-demo-agent}
+      MEDIATOR_CLIENT_SECRET: ${MEDIATOR_CLIENT_SECRET:-demo-secret-change-me}
+      NORTHWIND_DB_PATH: /data/northwind.db
+    volumes:
+      - blackbox_northwind_data:/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      - recorder
+
+  seed:
+    build:
+      context: ..
+      dockerfile: deploy/docker/backend.Dockerfile
+    command: ["python", "-m", "scenarios.company.seed"]
+    environment:
+      NORTHWIND_DB_PATH: /data/northwind.db
+    volumes:
+      - blackbox_northwind_data:/data
+    profiles: ["tools"] # run once via `make seed`, never part of `up`
+
+  agent-runner:
+    build:
+      context: ..
+      dockerfile: deploy/docker/backend.Dockerfile
+    entrypoint: ["python", "-m", "scenarios.agent.run_scenario"]
+    # No ANTHROPIC_API_KEY, no AWS credentials, no NORTHWIND_DB_PATH here —
+    # deliberately (I3). The agent gets only the mediator's URL and a
+    # client credential to establish a session; everything else is the
+    # mediator's job, and killing this container does not touch the
+    # recorder's ability to keep recording (I1) because it is not on the
+    # only path to Postgres — it never was on that path at all.
+    environment:
+      MEDIATOR_BASE_URL: http://mediator:8000
+      MEDIATOR_CLIENT_ID: ${MEDIATOR_CLIENT_ID:-demo-agent}
+      MEDIATOR_CLIENT_SECRET: ${MEDIATOR_CLIENT_SECRET:-demo-secret-change-me}
+    depends_on:
+      - mediator
+    profiles: ["tools"] # run on demand via `make scenario SCENARIO=...`
+
+volumes:
+  blackbox_postgres_data:
+  blackbox_northwind_data:

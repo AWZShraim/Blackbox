@@ -98,3 +98,20 @@ async def establish_session(
         resp.raise_for_status()
         body = resp.json()
         return body["session_token"], body["session_id"]
+
+
+async def record_lifecycle_event(
+    *, base_url: str, session_token: str, session_id: str, event: str,
+    reason: str | None = None, initiated_by: str | None = None,
+) -> None:
+    """Used both by the agent itself (started/completed/failed) and,
+    independently, by anything watching the agent's process from the
+    outside (terminated, after a crash) — I1 depends on this being callable
+    by a party other than the agent."""
+    async with httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=10.0) as http:
+        resp = await http.post(
+            f"/session/{session_id}/lifecycle",
+            headers={"Authorization": f"Bearer {session_token}"},
+            json={"event": event, "reason": reason, "initiated_by": initiated_by},
+        )
+        resp.raise_for_status()

@@ -14,6 +14,7 @@ from typing import Any
 
 from common.interfaces import Collector, CredentialBroker
 from common.schema import (
+    AgentLifecyclePayload,
     ByteRange,
     ContainmentAction,
     ContainmentEventPayload,
@@ -21,6 +22,7 @@ from common.schema import (
     ContextSegment,
     FailMode,
     HumanContext,
+    LifecycleEvent,
     Message,
     ModelCallPayload,
     ModelResponsePayload,
@@ -216,6 +218,30 @@ class Mediator:
 
     def _is_post_containment(self, state: _SessionState) -> bool:
         return state.session.status in (SessionStatus.contained, SessionStatus.terminated)
+
+    async def record_lifecycle_event(
+        self, session_id: uuid.UUID, *, event: str, reason: str | None = None, initiated_by: str | None = None,
+    ) -> Step:
+        """I1: termination is an event WITHIN the trace, never the end of
+        it — this method has no branch that refuses to record because the
+        session already ended, was contained, or was terminated. A
+        supervisor that detects an agent process died unexpectedly calls
+        this with event="terminated" independently of the agent (which, by
+        construction, may no longer exist to call anything itself)."""
+        state = self._state(session_id)
+        post_containment = self._is_post_containment(state)
+        step = Step(
+            session_id=session_id, sequence=state.next_sequence(), type=StepType.agent_lifecycle,
+            payload=AgentLifecyclePayload(event=LifecycleEvent(event), reason=reason, initiated_by=initiated_by),
+            post_containment=post_containment,
+        )
+        await self._collector.emit_step(step)
+
+        if event in ("completed", "failed", "terminated"):
+            state.session.status = SessionStatus.terminated if event == "terminated" else SessionStatus(event)
+            state.session.ended_at = utcnow()
+            await self._collector.emit_session(state.session)
+        return step
 
     # -- containment (M9 uses this; wired here so M4's session-state check
     #    already has somewhere real to read from) -------------------------

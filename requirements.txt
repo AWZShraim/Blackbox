@@ -19,3 +19,8 @@ pytest==8.3.3
 pytest-asyncio==0.24.0
 freezegun==1.5.1
 Faker==30.1.0
+
+# test-only: bundles a real embeddable Postgres binary so recorder tests
+# run without Docker or a system Postgres install.
+pgserver==0.1.4
+greenlet

@@ -13,11 +13,11 @@ import secrets
 import uuid
 from dataclasses import dataclass
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from common.schema import HumanContext
-from mediator.core import Mediator
+from mediator.core import Mediator, SessionNotFound
 
 
 def hash_secret(secret: str) -> str:
@@ -89,6 +89,12 @@ class EstablishResponse(BaseModel):
     session_id: str
 
 
+class LifecycleRequest(BaseModel):
+    event: str
+    reason: str | None = None
+    initiated_by: str | None = None
+
+
 def build_session_router(mediator: Mediator, sessions: SessionStore):
     router = APIRouter()
 
@@ -111,5 +117,28 @@ def build_session_router(mediator: Mediator, sessions: SessionStore):
         )
         token = sessions.issue_token(session.session_id)
         return EstablishResponse(session_token=token, session_id=str(session.session_id))
+
+    @router.post("/session/{session_id}/lifecycle")
+    async def lifecycle(session_id: str, body: LifecycleRequest, request: Request) -> dict:
+        """I1: deliberately reachable independently of the agent — a
+        supervisor that detects an agent process died can call this with
+        event="terminated" using the same session token even though the
+        agent itself no longer exists to call anything."""
+        auth = request.headers.get("authorization", "")
+        token = auth.removeprefix("Bearer ").strip() if auth else None
+        try:
+            resolved_id = sessions.resolve(token)
+        except SessionAuthError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        if str(resolved_id) != session_id:
+            raise HTTPException(status_code=403, detail="session token does not match session_id in path")
+
+        try:
+            step = await mediator.record_lifecycle_event(
+                resolved_id, event=body.event, reason=body.reason, initiated_by=body.initiated_by,
+            )
+        except SessionNotFound as exc:
+            raise HTTPException(status_code=404, detail="unknown session") from exc
+        return {"step_id": str(step.step_id)}
 
     return router
