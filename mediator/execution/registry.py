@@ -16,6 +16,7 @@ catalogue in the first place.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Awaitable, Callable
@@ -61,6 +62,11 @@ class ToolSpec:
     handler: ToolHandler
     raw_exec: bool = False
     notes: str = ""
+    # Dotted import path to `handler`, e.g. "scenarios.tools.definitions.get_ticket".
+    # Derived automatically in ToolRegistry.register() if left blank — the
+    # sandbox (mediator/execution/sandbox.py) needs an importable reference
+    # rather than a live closure to run the call in a separate process.
+    handler_path: str = ""
 
 
 class ToolRegistry:
@@ -80,6 +86,10 @@ class ToolRegistry:
             )
         if spec.name in self._tools:
             raise ValueError(f"tool {spec.name!r} is already registered")
+        if not spec.handler_path:
+            spec = dataclasses.replace(
+                spec, handler_path=f"{spec.handler.__module__}.{spec.handler.__name__}"
+            )
         self._tools[spec.name] = spec
 
     def get(self, name: str) -> ToolSpec | None:

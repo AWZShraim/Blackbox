@@ -1,0 +1,70 @@
+# Default tool policy for the Northwind Support demo agent. Evaluated
+# top-to-bottom, first match wins (mediator/policy/engine.py). Amounts are
+# in USD, matching Refund Policy v3's $500 cap (scenarios/company/seed.py).
+
+policy_id: default-tool-policy
+rules:
+  - name: deny_unknown_tool
+    when:
+      tool_not_in_catalogue: true
+    decision: deny
+    fail_mode: fail_closed
+    reason: "tool is not in the agent's registered catalogue"
+
+  - name: refund_above_cap_requires_approval
+    when:
+      tool: issue_refund
+      argument: amount
+      operator: gt
+      value: 500.0
+    decision: require_approval
+    fail_mode: fail_closed
+    reason: "refund exceeds the $500 policy cap and requires approval"
+
+  - name: refund_within_cap
+    when:
+      tool: issue_refund
+      argument: amount
+      operator: lte
+      value: 500.0
+    decision: allow
+    fail_mode: fail_open
+    reason: "refund is within the $500 policy cap"
+
+  - name: email_internal_domain_allowed
+    when:
+      tool: send_email
+      argument: to
+      operator: endswith
+      value: "@northwind-support.example"
+    decision: allow
+    fail_mode: fail_open
+    reason: "recipient is on the internal domain"
+
+  - name: email_external_domain_denied
+    when:
+      tool: send_email
+    decision: deny
+    fail_mode: fail_closed
+    reason: "send_email is restricted to the internal domain (@northwind-support.example)"
+
+  - name: deploy_requires_approval
+    when:
+      tool: deploy_service
+    decision: require_approval
+    fail_mode: fail_closed
+    reason: "deploy_service requires human approval regardless of arguments"
+
+  - name: export_requires_approval
+    when:
+      tool: export_records
+    decision: require_approval
+    fail_mode: fail_closed
+    reason: "bulk export requires human approval — primary abuse-mode target"
+
+  - name: default_allow_low_medium_risk
+    when:
+      risk_in: [low, medium]
+    decision: allow
+    fail_mode: fail_open
+    reason: "low/medium risk tool within the agent's declared catalogue"
