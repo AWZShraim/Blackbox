@@ -19,10 +19,11 @@ from mediator.credentials.local import LocalDevBroker
 from mediator.emit import AsyncQueueEmitter
 from mediator.execution.sandbox import SubprocessSandbox
 from mediator.ingress.containment import build_containment_router
+from mediator.ingress.introspection import build_introspection_router
 from mediator.ingress.mcp import build_mcp_asgi_app
 from mediator.ingress.messages import build_messages_router
 from mediator.ingress.session import SessionStore, build_session_router
-from mediator.policy.engine import PolicyEngine
+from mediator.policy.engine import DEFAULT_POLICY_PATH, PolicyEngine
 from mediator.providers import get_provider
 from recorder.client import NullCollector, RecorderHttpCollector
 from scenarios.tools.definitions import build_registry
@@ -96,6 +97,10 @@ def create_app(*, mediator: Mediator | None = None, sessions: SessionStore | Non
     app.include_router(build_session_router(mediator, sessions))
     app.include_router(build_messages_router(mediator, sessions))
     app.include_router(build_containment_router(mediator))
+    app.include_router(build_introspection_router(
+        mediator.registry, mediator.policy, policy_path=DEFAULT_POLICY_PATH,
+        baseline_store=BaselineStore(Path(os.environ["BLACKBOX_BASELINE_DIR"])) if os.environ.get("BLACKBOX_BASELINE_DIR") else None,
+    ))
 
     @app.get("/healthz")
     async def healthz():

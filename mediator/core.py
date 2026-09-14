@@ -202,6 +202,18 @@ class Mediator:
     def policy_baseline_latency(self) -> LatencyTracker:
         return self._policy_baseline_latency
 
+    @property
+    def policy(self) -> PolicyEngine:
+        return self._policy
+
+    @property
+    def registry(self) -> ToolRegistry:
+        return self._registry
+
+    @property
+    def agent_baseline(self) -> Baseline | None:
+        return self._agent_baseline
+
     # -- session lifecycle --------------------------------------------------
 
     async def create_session(

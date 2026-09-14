@@ -90,6 +90,46 @@ services:
       - mediator
     profiles: ["tools"] # run on demand via `make scenario SCENARIO=...`
 
+  demo:
+    build:
+      context: ..
+      dockerfile: deploy/docker/backend.Dockerfile
+    command: ["uvicorn", "scenarios.demo.main:app", "--host", "0.0.0.0", "--port", "8020"]
+    # Same no-credentials posture as agent-runner: the demo orchestrator
+    # calls the mediator over HTTP like any other client, it does not hold
+    # a model key. NORTHWIND_DB_PATH is the exception — it re-seeds the
+    # scenario database before each live attempt (Section 8), which needs
+    # filesystem access to the same volume the mediator's tools read from.
+    environment:
+      MEDIATOR_URL: http://mediator:8000
+      RECORDER_URL: http://recorder:8010
+      MEDIATOR_CLIENT_ID: ${MEDIATOR_CLIENT_ID:-demo-agent}
+      MEDIATOR_CLIENT_SECRET: ${MEDIATOR_CLIENT_SECRET:-demo-secret-change-me}
+      NORTHWIND_DB_PATH: /data/northwind.db
+      DEMO_LIVE_RUNS_ENABLED: ${DEMO_LIVE_RUNS_ENABLED:-true}
+    volumes:
+      - blackbox_northwind_data:/data
+    ports:
+      - "8020:8020"
+    depends_on:
+      - mediator
+
+  investigator:
+    build:
+      context: ../investigator
+      dockerfile: Dockerfile
+    environment:
+      RECORDER_URL: http://recorder:8010
+      MEDIATOR_URL: http://mediator:8000
+      DEMO_URL: http://demo:8020
+      BLACKBOX_OPERATOR_KEY: ${BLACKBOX_OPERATOR_KEY:-operator-dev-key-change-me}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - recorder
+      - mediator
+      - demo
+
 volumes:
   blackbox_postgres_data:
   blackbox_northwind_data:

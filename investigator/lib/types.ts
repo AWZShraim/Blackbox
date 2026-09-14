@@ -220,3 +220,35 @@ export function isContainmentEvent(step: Step): step is Step & { payload: Contai
 export function isAgentLifecycle(step: Step): step is Step & { payload: AgentLifecyclePayload } {
   return step.type === "agent_lifecycle";
 }
+
+// -- demo mode (Section 8) --------------------------------------------
+
+export interface ScenarioSummary {
+  scenario_id: string;
+  title: string;
+  mechanism: string;
+  is_live: boolean;
+  notes: string;
+}
+
+export interface RunResponse {
+  session_id: string;
+  mode: "live" | "recorded";
+  notice: string | null;
+}
+
+export interface OutcomeResponse {
+  status: "pending" | "demonstrated" | "fallback";
+  fallback_session_id: string | null;
+}
+
+export type Persona = "responder" | "platform_engineer";
+
+export interface ToolCatalogueEntry {
+  name: string;
+  description: string;
+  tool_class: "read" | "write";
+  risk: "low" | "medium" | "high" | "critical";
+  notes: string;
+  input_schema: Record<string, unknown>;
+}

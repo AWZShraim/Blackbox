@@ -3,7 +3,7 @@
 COMPOSE := docker compose -f deploy/docker-compose.yml
 
 up:
-	$(COMPOSE) up --build -d postgres recorder mediator
+	$(COMPOSE) up --build -d postgres recorder mediator demo investigator
 
 down:
 	$(COMPOSE) down
