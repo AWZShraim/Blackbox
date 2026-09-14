@@ -36,7 +36,7 @@ class DirectTransport:
             model=self._model, system=system, messages=messages, tools=tools, max_tokens=1024
         )
 
-    async def run_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+    async def run_tool(self, name: str, arguments: dict[str, Any], *, tool_call_id: str) -> Any:
         spec = self._registry.get(name)
         if spec is None:
             raise ValueError(f"unknown tool {name!r}")

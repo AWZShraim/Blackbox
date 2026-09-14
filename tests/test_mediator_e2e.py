@@ -109,3 +109,24 @@ async def test_agent_resolves_a_ticket_entirely_through_the_mediator(live_server
     assert step_types.count("tool_result") == 2
     assert step_types.count("policy_decision") == 2
     assert all(s.session_id == collector.sessions[0].session_id for s in collector.steps)
+
+    # Regression: provenance content_id must stay stable across the real
+    # MCP round trip. The model's own tool_use.id has to reach the
+    # mediator's provenance_by_call_id so a tool_result reappearing in a
+    # LATER model_call's context_composition is recognized as the same
+    # content, not re-minted with a random id every time (which would
+    # silently break content_id-based backward tracing, I8).
+    tool_result_step = next(s for s in collector.steps if s.type.value == "tool_result")
+    original_content_id = tool_result_step.payload.provenance.content_id
+
+    later_model_call = collector.steps[
+        [s.type.value for s in collector.steps].index("model_call", collector.steps.index(tool_result_step) + 1)
+    ]
+    matching_segments = [
+        seg for seg in later_model_call.payload.context_composition
+        if seg.provenance.content_id == original_content_id
+    ]
+    assert matching_segments, (
+        "the tool_result's content_id never reappeared in the next model_call's "
+        "context_composition — provenance tracking is broken on the MCP path"
+    )

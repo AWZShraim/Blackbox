@@ -35,6 +35,19 @@ _current_session_token: contextvars.ContextVar[str | None] = contextvars.Context
     "blackbox_mcp_session_token", default=None
 )
 
+# The Blackbox demo agent (scenarios/agent/transport_mediated.py) smuggles
+# the model's own tool_use.id through as this reserved argument key, so
+# provenance_by_call_id (mediator/core.py) is keyed by the same id the
+# agent will later use as tool_use_id when building the next model call's
+# tool_result block — without it the mediator has no way to correlate a
+# reappearing tool_result back to its original provenance record, and
+# content_id-based backward tracing silently breaks. Popped off before the
+# tool ever sees `arguments`. A generic/external MCP client (M12: Claude
+# Code, Cursor, ...) won't send this; a fresh id is minted for it instead —
+# that content simply won't be traceable back to a specific model turn by
+# content_id, which is expected for a client Blackbox didn't generate.
+TOOL_CALL_ID_ARG_KEY = "_blackbox_tool_call_id"
+
 
 def build_mcp_asgi_app(mediator: Mediator, sessions: SessionStore, registry: ToolRegistry):
     server: Server = Server("blackbox-mediator")
@@ -54,7 +67,8 @@ def build_mcp_asgi_app(mediator: Mediator, sessions: SessionStore, registry: Too
         except SessionAuthError as exc:
             return [types.TextContent(type="text", text=f"error: {exc}")]
 
-        tool_call_id = f"mcp-{uuid.uuid4().hex[:12]}"
+        arguments = dict(arguments)
+        tool_call_id = arguments.pop(TOOL_CALL_ID_ARG_KEY, None) or f"mcp-{uuid.uuid4().hex[:12]}"
         try:
             result = await mediator.handle_tool_call(
                 session_id=session_id, tool_name=name, arguments=arguments, tool_call_id=tool_call_id,

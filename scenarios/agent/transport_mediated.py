@@ -19,6 +19,7 @@ import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
+from mediator.ingress.mcp import TOOL_CALL_ID_ARG_KEY
 from mediator.providers.base import ModelResponse, ToolCall
 
 
@@ -71,10 +72,17 @@ class MediatedTransport:
             input_tokens=usage.get("input_tokens", 0), output_tokens=usage.get("output_tokens", 0),
         )
 
-    async def run_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+    async def run_tool(self, name: str, arguments: dict[str, Any], *, tool_call_id: str) -> Any:
         if self._mcp_session is None:
             raise RuntimeError("MediatedTransport must be used as `async with MediatedTransport(...) as t:`")
-        result = await self._mcp_session.call_tool(name, arguments)
+        # Carries the model's own tool_use.id through to the mediator so
+        # provenance_by_call_id (mediator/core.py) is keyed by the same id
+        # loop.py will use as tool_use_id when it builds the tool_result
+        # block for the NEXT model call — without this, the mediator can't
+        # tell which provenance record a reappearing tool_result belongs
+        # to, and content_id-based backward tracing (I8) silently breaks.
+        wire_arguments = {**arguments, TOOL_CALL_ID_ARG_KEY: tool_call_id}
+        result = await self._mcp_session.call_tool(name, wire_arguments)
         text = "".join(block.text for block in result.content if block.type == "text")
         payload = json.loads(text) if text else None
         if result.isError or (isinstance(payload, dict) and "error" in payload):

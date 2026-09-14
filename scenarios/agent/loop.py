@@ -39,7 +39,7 @@ class AgentTransport(Protocol):
         self, *, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
     ) -> ModelResponse: ...
 
-    async def run_tool(self, name: str, arguments: dict[str, Any]) -> Any: ...
+    async def run_tool(self, name: str, arguments: dict[str, Any], *, tool_call_id: str) -> Any: ...
 
 
 @dataclass
@@ -78,7 +78,7 @@ async def run_agent(
         tool_result_blocks: list[dict[str, Any]] = []
         for call in response.tool_calls:
             try:
-                result = await transport.run_tool(call.name, call.input)
+                result = await transport.run_tool(call.name, call.input, tool_call_id=call.id)
                 tool_result_blocks.append({
                     "type": "tool_result",
                     "tool_use_id": call.id,

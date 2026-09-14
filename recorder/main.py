@@ -20,7 +20,9 @@ from typing import Union
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 
-from common.schema import Session, SessionStatus, Step
+from common.schema import Session, SessionStatus, Step, StepType
+from detector.baseline import BaselineStore
+from detector.engine import run_detectors
 from recorder.exporters.stdout_exporter import StdoutExporter
 from recorder.store.postgres import PostgresStore
 from recorder.store.s3_archive import LocalDiskArchive, S3ObjectLockArchive
@@ -39,7 +41,10 @@ ARCHIVE_ON_STATUSES = {
 _Event = Union[Session, Step]
 
 
-def create_app(*, store: PostgresStore | None = None, archive=None, exporters=None) -> FastAPI:
+def create_app(
+    *, store: PostgresStore | None = None, archive=None, exporters=None,
+    baseline_store: BaselineStore | None = None, run_detection: bool = True,
+) -> FastAPI:
     database_url = os.environ.get(
         "DATABASE_URL", "postgresql+asyncpg://blackbox:blackbox@localhost:5432/blackbox"
     )
@@ -50,6 +55,10 @@ def create_app(*, store: PostgresStore | None = None, archive=None, exporters=No
         archive = S3ObjectLockArchive(bucket) if bucket else LocalDiskArchive(Path("recorder/.archive"))
 
     active_exporters = exporters if exporters is not None else [StdoutExporter()]
+
+    if baseline_store is None:
+        baseline_dir = os.environ.get("BLACKBOX_BASELINE_DIR")
+        baseline_store = BaselineStore(Path(baseline_dir)) if baseline_dir else None
 
     queue: asyncio.Queue[_Event] = asyncio.Queue(maxsize=20_000)
     state = {"drop_count": 0, "drain_task": None}
@@ -67,7 +76,10 @@ def create_app(*, store: PostgresStore | None = None, archive=None, exporters=No
         while True:
             event = await queue.get()
             try:
-                await _process_event(event, store=store, archive=archive, exporters=active_exporters)
+                await _process_event(
+                    event, store=store, archive=archive, exporters=active_exporters,
+                    baseline_store=baseline_store, run_detection=run_detection,
+                )
             except Exception:  # noqa: BLE001 - one bad event must not kill the drain loop
                 logger.exception("blackbox recorder: failed to process event")
             finally:
@@ -129,7 +141,10 @@ def create_app(*, store: PostgresStore | None = None, archive=None, exporters=No
     return app
 
 
-async def _process_event(event: _Event, *, store: PostgresStore, archive, exporters: list) -> None:
+async def _process_event(
+    event: _Event, *, store: PostgresStore, archive, exporters: list,
+    baseline_store: BaselineStore | None, run_detection: bool,
+) -> None:
     if isinstance(event, Session):
         await store.upsert_session(event)
         for exporter in exporters:
@@ -138,12 +153,48 @@ async def _process_event(event: _Event, *, store: PostgresStore, archive, export
             trace = await store.get_trace(event.session_id)
             if trace is not None:
                 await archive.archive_trace(trace)
-    else:
-        await store.insert_step(event)
-        session = await store.get_session(event.session_id)
-        if session is not None:
-            for exporter in exporters:
-                await exporter.export_step(session, event)
+        return
+
+    await store.insert_step(event)
+    session = await store.get_session(event.session_id)
+    if session is not None:
+        for exporter in exporters:
+            await exporter.export_step(session, event)
+
+    # Detection runs on the trace stream (Section 6.4), not in the
+    # mediator's request path — this is that stream. Skip re-running it
+    # off the flags it just produced: nothing in detector/detectors/*
+    # takes a detection_flag step as an input signal, so this can't loop,
+    # but there's no reason to pay for the trace fetch either.
+    if run_detection and event.type != StepType.detection_flag and session is not None:
+        await _run_detection_and_persist(session.session_id, store=store, exporters=exporters, baseline_store=baseline_store)
+
+
+async def _run_detection_and_persist(
+    session_id, *, store: PostgresStore, exporters: list, baseline_store: BaselineStore | None,
+) -> None:
+    trace = await store.get_trace(session_id)
+    if trace is None:
+        return
+
+    already_flagged = {
+        (s.payload.detector_id, s.parent_step_id)
+        for s in trace.steps
+        if s.type == StepType.detection_flag
+    }
+
+    agent_baseline = baseline_store.load("agent", trace.session.agent_id) if baseline_store else None
+    human_baseline = baseline_store.load("human", trace.session.human_id) if baseline_store else None
+
+    new_flag_steps = [
+        s for s in run_detectors(trace, agent_baseline=agent_baseline, human_baseline=human_baseline)
+        if (s.payload.detector_id, s.parent_step_id) not in already_flagged
+    ]
+    for flag_step in new_flag_steps:
+        await store.insert_step(flag_step)
+        session = trace.session
+        for exporter in exporters:
+            await exporter.export_step(session, flag_step)
 
 
 app = create_app()
