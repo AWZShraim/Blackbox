@@ -10,11 +10,9 @@ them investigable.
 
 ## Status
 
-Built milestone by milestone; see git log. Currently: M1-M11 (the spine,
-detection, a live incident, containment, the hosted demo, and AWS IaC).
-M12 (MCP endpoint + latency) next — though the MCP endpoint itself is
-already built and tested against a real MCP client as part of M4/M8, and
-the latency budget is already measured and published above.
+**All 12 milestones complete.** See `deploy/MCP_CLIENTS.md` for M12's
+verification (a real MCP client — and raw JSON-RPC over curl, no SDK —
+against the live endpoint, tool calls appearing in the recorded trace).
 
 ## Performance
 
