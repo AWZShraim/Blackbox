@@ -27,7 +27,7 @@ def db_path(tmp_path):
     return path
 
 
-def make_mediator(*, provider=None, db_path=None):
+def make_mediator(*, provider=None, db_path=None, agent_baseline=None, human_baselines=None):
     collector = InMemoryCollector()
     mediator = Mediator(
         registry=build_registry(),
@@ -36,6 +36,8 @@ def make_mediator(*, provider=None, db_path=None):
         sandbox=InProcessSandbox(),
         collector=collector,
         provider=provider,
+        agent_baseline=agent_baseline,
+        human_baselines=human_baselines,
     )
     return mediator, collector
 
@@ -197,3 +199,60 @@ async def test_model_call_token_budget_is_enforced(db_path):
             session_id=session.session_id, model="claude-haiku-4-5-20251001", system_prompt=None,
             messages=[{"role": "user", "content": "hi again"}], tools_offered=[],
         )
+
+
+@pytest.mark.asyncio
+async def test_inline_baseline_check_flags_an_out_of_range_argument_at_call_time(db_path):
+    """Section 6.2 step 4 / Section 6.4: the mediator's own inline check,
+    not the async detector pipeline — fast, in-memory, no candidate
+    triggers (those need the full trace)."""
+    from detector.baseline import ArgumentShape, Baseline, ToolBaseline
+
+    baseline = Baseline(
+        subject_type="agent", subject_id="support-agent", learned_at="2026-01-01T00:00:00Z",
+        sessions_observed=10, tool_set=["issue_refund"],
+        tools={"issue_refund": ToolBaseline(call_count=10, argument_shapes={
+            "amount": ArgumentShape(is_numeric=True, min_value=10.0, max_value=480.0),
+        })},
+    )
+    mediator, collector = make_mediator(db_path=db_path, agent_baseline=baseline)
+    session = await mediator.create_session(
+        agent_id="a", agent_version="0.1.0", human_id="user:jane", task_description="x",
+    )
+    with pytest.raises(ToolNotAllowed):  # 2000 also exceeds the policy cap independently
+        await mediator.handle_tool_call(
+            session_id=session.session_id, tool_name="issue_refund",
+            arguments={"order_id": 1, "amount": 2000.0}, tool_call_id="c1",
+        )
+    flag_step = next(s for s in collector.steps if s.type.value == "detection_flag")
+    assert flag_step.payload.detector_id == "inline_argument_anomaly"
+    assert flag_step.payload.baseline_ref == baseline.ref()
+
+
+@pytest.mark.asyncio
+async def test_inline_baseline_check_flags_human_volume_deviation(db_path):
+    from detector.baseline import Baseline
+
+    human_baseline = Baseline(
+        subject_type="human", subject_id="user:contractor.temp", learned_at="2026-01-01T00:00:00Z",
+        sessions_observed=5, tool_set=[], tools={}, calls_per_session_max=1,
+    )
+    mediator, collector = make_mediator(
+        db_path=db_path, human_baselines={"user:contractor.temp": human_baseline}
+    )
+    session = await mediator.create_session(
+        agent_id="a", agent_version="0.1.0", human_id="user:contractor.temp", task_description="x",
+    )
+    await mediator.handle_tool_call(
+        session_id=session.session_id, tool_name="get_ticket", arguments={"id": 1}, tool_call_id="c1",
+    )
+    await mediator.handle_tool_call(
+        session_id=session.session_id, tool_name="get_ticket", arguments={"id": 2}, tool_call_id="c2",
+    )
+    flags = [s for s in collector.steps if s.type.value == "detection_flag"]
+    assert any(f.payload.detector_id == "inline_volume_anomaly" for f in flags)
+
+
+def test_policy_baseline_latency_is_tracked_and_excludes_tool_execution():
+    mediator, _ = make_mediator()
+    assert mediator.policy_baseline_latency.count == 0  # nothing measured yet, no calls made

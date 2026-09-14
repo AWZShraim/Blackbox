@@ -20,6 +20,7 @@ from common.schema import (
     ContainmentEventPayload,
     ContainmentInfo,
     ContextSegment,
+    DetectionFlagPayload,
     FailMode,
     HumanContext,
     LifecycleEvent,
@@ -42,8 +43,10 @@ from common.schema import (
     TrustLevel,
     utcnow,
 )
+from detector.baseline import Baseline
 from mediator.execution.registry import ToolRegistry
 from mediator.execution.sandbox import Sandbox
+from mediator.latency import LatencyTracker
 from mediator.policy.engine import PolicyEngine, PolicyEvaluation
 from mediator.providers.base import ModelProvider, ModelResponse
 
@@ -153,6 +156,8 @@ class _SessionState:
     sequence: int = 0
     provenance_by_call_id: dict[str, ProvenanceRecord] = field(default_factory=dict)
     tokens_spent: int = 0
+    last_tool_name: str | None = None
+    tool_call_count: int = 0
 
     def next_sequence(self) -> int:
         seq = self.sequence
@@ -172,6 +177,8 @@ class Mediator:
         provider: ModelProvider | None = None,
         max_tokens_per_call: int = DEFAULT_MAX_TOKENS_PER_CALL,
         max_tokens_per_session: int = DEFAULT_MAX_TOKENS_PER_SESSION,
+        agent_baseline: Baseline | None = None,
+        human_baselines: dict[str, Baseline] | None = None,
     ) -> None:
         self._registry = registry
         self._policy = policy
@@ -181,7 +188,19 @@ class Mediator:
         self._provider = provider
         self._max_tokens_per_call = max_tokens_per_call
         self._max_tokens_per_session = max_tokens_per_session
+        # Cached baselines for the mediator's own inline check (Section 6.2
+        # step 4, Section 6.4) — in-memory lookups only, no I/O, so this
+        # stays inside the <10ms p99 budget. The full trace-wide detector
+        # pass (detector/engine.py) is a separate, richer analysis that
+        # runs on the trace stream, not here.
+        self._agent_baseline = agent_baseline
+        self._human_baselines = human_baselines or {}
+        self._policy_baseline_latency = LatencyTracker()
         self._sessions: dict[uuid.UUID, _SessionState] = {}
+
+    @property
+    def policy_baseline_latency(self) -> LatencyTracker:
+        return self._policy_baseline_latency
 
     # -- session lifecycle --------------------------------------------------
 
@@ -333,6 +352,59 @@ class Mediator:
         await self._collector.emit_step(response_step)
         return response
 
+    def _inline_baseline_check(
+        self, state: _SessionState, tool_name: str, arguments: dict[str, Any]
+    ) -> DetectionFlagPayload | None:
+        """Fast, synchronous, in-memory only — no I/O, no full-trace walk,
+        no ranked candidate triggers (that needs the complete trace, which
+        only the recorder/detector pipeline has). Complements, rather than
+        replaces, the async detector pipeline's argument_anomaly /
+        sequence_anomaly / volume_anomaly, which score every call against
+        the whole trace after the fact. `inline_*` detector_ids keep the
+        two paths visibly distinct rather than silently double-flagging
+        under the same id."""
+        if self._agent_baseline is not None:
+            tool_baseline = self._agent_baseline.tools.get(tool_name)
+            if tool_baseline is not None:
+                for arg_name, arg_value in arguments.items():
+                    shape = tool_baseline.argument_shapes.get(arg_name)
+                    if shape is None or not shape.is_numeric:
+                        continue
+                    if not isinstance(arg_value, (int, float)) or isinstance(arg_value, bool):
+                        continue
+                    hi = (shape.max_value or 0) * 1.2 if shape.max_value else None
+                    lo = (shape.min_value or 0) / 1.2 if shape.min_value else None
+                    if (hi is not None and arg_value > hi) or (lo is not None and arg_value < lo):
+                        return DetectionFlagPayload(
+                            severity="high", detector_id="inline_argument_anomaly",
+                            description=f"{tool_name}({arg_name}={arg_value!r}) is outside the learned range",
+                            baseline_ref=self._agent_baseline.ref(),
+                        )
+            if (
+                state.last_tool_name is not None and self._agent_baseline.sequences
+                and tool_name in self._agent_baseline.tool_set and state.last_tool_name in self._agent_baseline.tool_set
+                and not self._agent_baseline.has_sequence(state.last_tool_name, tool_name)
+            ):
+                return DetectionFlagPayload(
+                    severity="medium", detector_id="inline_sequence_anomaly",
+                    description=f"transition {state.last_tool_name} -> {tool_name} was never observed in the baseline",
+                    baseline_ref=self._agent_baseline.ref(),
+                )
+
+        human_baseline = self._human_baselines.get(state.session.human_id)
+        if human_baseline is not None and human_baseline.calls_per_session_max > 0:
+            threshold = human_baseline.calls_per_session_max * 1.5
+            if state.tool_call_count + 1 > threshold:
+                return DetectionFlagPayload(
+                    severity="high", detector_id="inline_volume_anomaly",
+                    description=(
+                        f"{state.tool_call_count + 1} tool calls this session for {state.session.human_id} "
+                        f"vs. a learned envelope of {human_baseline.calls_per_session_max}"
+                    ),
+                    baseline_ref=human_baseline.ref(),
+                )
+        return None
+
     # -- tool traffic (I6) ---------------------------------------------------
 
     async def handle_tool_call(
@@ -361,10 +433,17 @@ class Mediator:
         in_catalogue = spec is not None
         risk = spec.risk.value if spec else "critical"
 
+        # Section 6.2 step 4 / Section 6.4: policy evaluation plus the
+        # inline baseline check together must add under 10ms p99, excluding
+        # actual tool execution (sandbox.execute, below, is deliberately
+        # outside this timer). Both read only in-memory state.
+        eval_start = time.perf_counter()
         decision_eval = (
             _forced_deny("session is contained/terminated") if post_containment
             else self._policy.evaluate(tool_name=tool_name, arguments=arguments, risk=risk, in_catalogue=in_catalogue)
         )
+        deviation = None if post_containment else self._inline_baseline_check(state, tool_name, arguments)
+        self._policy_baseline_latency.record((time.perf_counter() - eval_start) * 1000)
 
         decision_step = Step(
             session_id=session_id, sequence=state.next_sequence(), type=StepType.policy_decision,
@@ -377,6 +456,16 @@ class Mediator:
             post_containment=post_containment,
         )
         await self._collector.emit_step(decision_step)
+
+        if deviation is not None:
+            flag_step = Step(
+                session_id=session_id, sequence=state.next_sequence(), type=StepType.detection_flag,
+                parent_step_id=request_step.step_id, payload=deviation, post_containment=post_containment,
+            )
+            await self._collector.emit_step(flag_step)
+
+        state.tool_call_count += 1
+        state.last_tool_name = tool_name
 
         if decision_eval.decision != PolicyDecision.allow:
             error = f"{decision_eval.decision.value}: {decision_eval.reason}"

@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
+from detector.baseline import BaselineStore
 from mediator.core import Mediator
 from mediator.credentials.local import LocalDevBroker
 from mediator.emit import AsyncQueueEmitter
@@ -50,9 +52,19 @@ def create_app(*, mediator: Mediator | None = None, sessions: SessionStore | Non
         except RuntimeError:
             provider = None  # no model key configured — tool-only calls still work
 
+        # Baselines are opt-in: until a platform engineer has run an
+        # observe-only learning pass and reviewed/committed the result
+        # (Section 6.4), there is nothing to enforce against, and the
+        # inline check below is simply a no-op — never a blanket "assume
+        # anomalous" default.
+        agent_baseline = None
+        baseline_dir = os.environ.get("BLACKBOX_BASELINE_DIR")
+        if baseline_dir:
+            agent_baseline = BaselineStore(Path(baseline_dir)).load("agent", "support-agent")
+
         mediator = Mediator(
             registry=registry, policy=policy, credential_broker=credential_broker,
-            sandbox=sandbox, collector=emitter, provider=provider,
+            sandbox=sandbox, collector=emitter, provider=provider, agent_baseline=agent_baseline,
         )
 
     if sessions is None:
@@ -85,9 +97,16 @@ def create_app(*, mediator: Mediator | None = None, sessions: SessionStore | Non
 
     @app.get("/healthz")
     async def healthz():
+        latency = mediator.policy_baseline_latency
+        body = {
+            "status": "ok",
+            "policy_baseline_latency_ms": {"p50": latency.p50, "p99": latency.p99, "samples": latency.count},
+        }
         if emitter is None:
-            return {"status": "ok", "queue_depth": None, "drop_count": None}
-        return {"status": "ok", "queue_depth": emitter.queue_depth, "drop_count": emitter.drop_count}
+            body.update(queue_depth=None, drop_count=None)
+        else:
+            body.update(queue_depth=emitter.queue_depth, drop_count=emitter.drop_count)
+        return body
 
     app.mount("/mcp", mcp_app)
     return app
